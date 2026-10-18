@@ -11,6 +11,7 @@ from sudoku_sat import rule_clauses, solve, var
 
 DATA_DIR = Path("data")
 SPLITS = {"val": (200, 1), "test": (1000, 2)}  # split: (number of puzzles, seed)
+WORKERS = 3  # worker processes per pool: with the main process, at most 4 Python processes
 
 
 def shuffle_symmetries(grid: list[list[int]], rng: random.Random) -> list[list[int]]:
@@ -57,7 +58,7 @@ def make_puzzle(seed: int, stop_at: int = 0) -> dict:
 
 def make_puzzles(n: int, seed: int, stop_at: int = 0) -> list[dict]:
     """Return n puzzles, generated in parallel; puzzle i uses seed 100000 * seed + i."""
-    with Pool() as pool:
+    with Pool(WORKERS) as pool:
         return pool.starmap(make_puzzle, [(100_000 * seed + i, stop_at) for i in range(n)])
 
 

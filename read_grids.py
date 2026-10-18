@@ -1,4 +1,5 @@
-"""Read the test grids with every model, then solve the argmax readings."""
+"""Read the grids with every model, then solve the argmax readings."""
+import sys
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pandas as pd
 import torch
 
 from digits import DATA_DIR, MODELS, SEEDS, load_model, predict_logits
-from generate import load_puzzles
+from generate import WORKERS, load_puzzles
 from grids import cut_cells, draw_grid, grid_cells, puzzle_labels
 from plots import INK, MODEL_COLORS, MUTED, save, style
 from sudoku_sat import count_solutions, solve
@@ -51,14 +52,19 @@ def classify(reading: list[list[int]], puzzle: list[list[int]], solution: list[l
 
 
 def main() -> None:
-    """Read and solve the test grids with all 9 models; write the outcome tables and figure."""
-    grid_logits("val")  # cached for the later scripts; this one reports test numbers only
-    puzzles = load_puzzles("test")
+    """Read and solve the grids of a split ('val' or 'test', from the command line) with all 9 models."""
+    split = sys.argv[1] if len(sys.argv) > 1 else "test"
+    suffix = "" if split == "test" else f"_{split}"
+    out = RESULTS / f"reading_outcomes{suffix}.csv"
+    if split == "test" and out.exists():
+        print(f"{out} exists: the test grids are solved only once.")
+        return
+    puzzles = load_puzzles(split)
     labels = puzzle_labels(puzzles)
     digit = labels != 0
-    logits = grid_logits("test")
+    logits = grid_logits(split)
     rows, per_grid = [], []
-    with Pool() as pool:
+    with Pool(WORKERS) as pool:
         for (name, seed), z in logits.items():
             pred = z.argmax(2)
             correct = pred == labels
@@ -77,10 +83,10 @@ def main() -> None:
             print(f"{name:6s} seed {seed}: digits {100 * row['acc_digits']:.2f}%, perfect {100 * row['perfect']:.1f}% "
                   f"(independence predicts {100 * predicted:.1f}%), unique wrong {outcomes.count('unique, wrong')}")
     table = pd.DataFrame(rows)
-    table.to_csv(RESULTS / "reading_outcomes.csv", index=False)
+    table.to_csv(out, index=False)
     grids = pd.DataFrame(per_grid)
 
-    print("\nMean over seeds (% of the 1,000 test grids):")
+    print(f"\nMean over seeds (% of the {len(puzzles)} {split} grids):")
     print((100 * table.groupby("model", sort=False)[["acc_digits", "predicted_perfect"] + OUTCOMES].mean()).round(2)
           .to_string())
     print("\nOutcome of misread grids by number of misread cells (all models and seeds, % of row):")
@@ -100,10 +106,10 @@ def main() -> None:
     style(ax)
     ax.set_xlabel("predicted by independence (%)", color=INK)
     ax.set_ylabel("grids read perfectly (%)", color=INK)
-    ax.set_title("Grid accuracy: observed against independence\n(1,000 test grids, one dot per seed)", color=INK,
-                 fontsize=11)
+    ax.set_title(f"Grid accuracy: observed against independence\n({len(puzzles)} {split} grids, one dot per seed)",
+                 color=INK, fontsize=11)
     ax.legend(frameon=False, labelcolor=INK)
-    save(fig, RESULTS / "reading_independence.png")
+    save(fig, RESULTS / f"reading_independence{suffix}.png")
 
 
 if __name__ == "__main__":
