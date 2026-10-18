@@ -1,12 +1,15 @@
 import math
 import random
+import time
 
+import pandas as pd
+import torch
 from pysat.examples.rc2 import RC2
 
 from generate import make_puzzle
 from puzzles import WIKI_9
-from repair import (cost_offset, pair_cut, reading_cost, reading_from_model, repair, repair_formula, two_solutions,
-                    weight, y)
+from repair import (ANSWERS, MAX_TRIES, cost_offset, pair_cut, reading_cost, reading_from_model, repair,
+                    repair_formula, summarize, two_solutions, uniqueness_loop, weight, y)
 from sudoku_sat import count_solutions
 
 
@@ -99,6 +102,29 @@ def test_pair_cut_loop_ends_on_the_same_reading_as_the_blocking_loop():
             total = sum(probs)
             lp[9 * r + c] = [math.log(p / total) for p in probs]
         assert repair(lp)[-1] == blocking_loop(lp)
+
+
+def test_the_time_budget_is_respected_on_a_hopeless_grid():
+    g = torch.Generator().manual_seed(0)
+    lp = torch.log_softmax(0.3 * torch.randn(81, 10, generator=g, dtype=torch.float64), 1).tolist()  # no idea at all
+    start = time.perf_counter()
+    with RC2(repair_formula(lp)) as rc2:
+        readings, status = uniqueness_loop(rc2, 1000, budget=1.0)
+        assert time.perf_counter() - start < 3.0
+        assert status == "interrupted"
+        readings2, status2 = uniqueness_loop(rc2, 1, budget=5.0)  # no leftover interrupt cuts the next call short
+        assert status2 != "unsat"
+
+
+def test_timeouts_are_counted_and_the_answers_add_up_to_100_percent():
+    table = pd.DataFrame(dict(
+        probs="raw", model="cnn", seed=0, grid=range(5), argmax_exact=False, maxsat_exact=False, loop_exact=False,
+        answer=["right", "wrong", "flagged", "flagged", "timeout"], tries=[1, 1, MAX_TRIES, 3, 2], seconds=1.0))
+    s = summarize(table).iloc[0]
+    assert s.answer_right == 20 and s.answer_wrong == 20
+    assert s.answer_flagged == 20  # 20 readings, all with several solutions
+    assert s.answer_timeout == 40  # an old 'flagged' row that stopped early is a timeout
+    assert sum(s[f"answer_{a}"] for a in ANSWERS) == 100 and s.grids == 5
 
 
 def test_uniqueness_loop_restores_a_clue_read_as_blank():
