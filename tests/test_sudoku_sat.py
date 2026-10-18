@@ -1,0 +1,134 @@
+import pytest
+from pysat.solvers import Solver
+
+from puzzles import (
+    EASY_4,
+    EASY_4_SOLUTION,
+    HARD_9,
+    MULTI_4,
+    TRICKY_UNSOLVABLE_4,
+    UNSOLVABLE_4,
+    WIKI_9,
+    WIKI_9_SOLUTION,
+)
+from sudoku_sat import (
+    count_solutions,
+    decode,
+    exactly_one,
+    is_valid_solution,
+    rule_clauses,
+    solve,
+    var,
+)
+
+
+def test_known_solution_is_valid():
+    assert is_valid_solution(WIKI_9, WIKI_9_SOLUTION)
+
+
+def test_swapping_two_cells_breaks_the_solution():
+    bad = [row[:] for row in WIKI_9_SOLUTION]  # copy every row
+    bad[0][0], bad[0][1] = bad[0][1], bad[0][0]
+    assert not is_valid_solution(WIKI_9, bad)
+
+
+def test_valid_grid_that_ignores_the_clues_is_rejected():
+    swap = {1: 2, 2: 1}
+    other = [[swap.get(v, v) for v in row] for row in WIKI_9_SOLUTION]
+    assert not is_valid_solution(WIKI_9, other)
+
+
+def test_var_numbers_triples_from_1_to_n_cubed():
+    for n in (4, 9):
+        numbers = [var(r, c, v, n) for r in range(n) for c in range(n) for v in range(1, n + 1)]
+        assert sorted(numbers) == list(range(1, n**3 + 1))
+
+
+def test_decode_inverts_var():
+    n = 9
+    for r in range(n):
+        for c in range(n):
+            for v in range(1, n + 1):
+                assert decode(var(r, c, v, n), n) == (r, c, v)
+
+
+def test_var_examples():
+    assert var(0, 0, 1, 9) == 1
+    assert var(1, 0, 1, 9) == 82
+    assert var(8, 8, 9, 9) == 729
+
+
+def test_exactly_one_clauses():
+    assert exactly_one([1, 2, 3]) == [[1, 2, 3], [-1, -2], [-1, -3], [-2, -3]]
+
+
+def test_exactly_one_allows_exactly_one_true_literal():
+    with Solver(name="g4", bootstrap_with=exactly_one([1, 2, 3, 4])) as solver:
+        models = list(solver.enum_models())
+    assert len(models) == 4
+    for model in models:
+        assert sum(1 for lit in model if lit > 0) == 1
+
+
+def test_rule_clause_counts():
+    assert len(rule_clauses(4)) == 448     # 64 groups x (1 + 6) clauses
+    assert len(rule_clauses(9)) == 11988   # 324 groups x (1 + 36) clauses
+
+
+def test_rules_allow_exactly_288_complete_4x4_grids():
+    with Solver(name="g4", bootstrap_with=rule_clauses(4)) as solver:
+        count = sum(1 for _ in solver.enum_models())
+    assert count == 288
+
+
+def test_solves_easy_4x4():
+    assert solve(EASY_4) == EASY_4_SOLUTION
+
+
+def test_solves_wikipedia_puzzle():
+    assert solve(WIKI_9) == WIKI_9_SOLUTION
+
+
+def test_solves_hard_puzzle():
+    solution = solve(HARD_9)
+    assert solution is not None
+    assert is_valid_solution(HARD_9, solution)
+
+
+def test_unsolvable_puzzles_return_none():
+    assert solve(UNSOLVABLE_4) is None
+    assert solve(TRICKY_UNSOLVABLE_4) is None
+
+
+def test_count_solutions_of_proper_puzzles_is_one():
+    assert count_solutions(EASY_4) == 1
+    assert count_solutions(WIKI_9) == 1
+
+
+def test_count_solutions_stops_at_limit():
+    assert count_solutions(MULTI_4) == 2
+
+
+def test_count_all_solutions():
+    assert count_solutions(MULTI_4, limit=None) == 72
+
+
+def test_count_solutions_of_unsolvable_puzzle_is_zero():
+    assert count_solutions(UNSOLVABLE_4) == 0
+
+
+def test_rejects_grid_whose_size_is_not_a_square():
+    with pytest.raises(ValueError):
+        solve([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+
+
+def test_rejects_ragged_grid():
+    with pytest.raises(ValueError):
+        solve([[0, 0, 0, 0], [0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]])
+
+
+def test_rejects_out_of_range_value():
+    bad = [row[:] for row in WIKI_9]
+    bad[0][2] = 10
+    with pytest.raises(ValueError):
+        solve(bad)
