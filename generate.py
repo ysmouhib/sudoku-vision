@@ -11,7 +11,7 @@ from sudoku_sat import rule_clauses, solve, var
 
 DATA_DIR = Path("data")
 SPLITS = {"val": (200, 1), "test": (1000, 2)}  # split: (number of puzzles, seed)
-WORKERS = 3  # worker processes per pool: with the main process, at most 4 Python processes
+WORKERS = 2  # pool size: with the venv launcher and the main process, 4 Python processes in all
 
 
 def shuffle_symmetries(grid: list[list[int]], rng: random.Random) -> list[list[int]]:
