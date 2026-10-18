@@ -11,14 +11,17 @@ import torch
 from pysat.examples.rc2 import RC2
 from pysat.solvers import Solver
 
-from digits import DATA_DIR, MODELS
+from digits import DATA_DIR
 from generate import WORKERS, load_puzzles, make_puzzles
 from plots import BAD, INK, MODEL_COLORS, MUTED, save, style
 from repair import BUDGET, MAX_TRIES, N, mark_timeouts, repair_formula, uniqueness_loop, y
 from sudoku_sat import model_to_grid, rule_clauses, solve, var
 
 RESULTS = Path("results")
-CENSUS_SETS = {"minimal": (1000, 3, 0), "30 clues": (1000, 4, 30)}  # name: (puzzles, seed, stop_at)
+CENSUS_SETS = {"minimal": (200, 3, 0), "30 clues": (200, 4, 30)}  # name: (puzzles, seed, stop_at)
+MARGIN_MODELS = ["cnn"]  # the margin rule is evaluated on the CNN, seed 0
+MARGIN_SEEDS = [0]
+RIVAL_BUDGET = 1.0  # seconds for each search after the answer; past it, the margin is a lower bound
 CAP = 1000  # solutions of P without c enumerated at most
 R = 10  # an undetected wrong answer costs R times as much as declining to answer a right one
 TAU_GRID = np.round(np.arange(0, 20.001, 0.05), 2)  # candidate thresholds on the margin (nats)
@@ -81,7 +84,8 @@ def census_rows(i: int, p: dict, set_name: str) -> list[dict]:
     return rows
 
 
-def margin(log_probs: list[list[float]], solution: list[list[int]], budget: float = BUDGET) -> dict:
+def margin(log_probs: list[list[float]], solution: list[list[int]], budget: float = BUDGET,
+           rival_budget: float = RIVAL_BUDGET) -> dict:
     """Repair a grid, then find the best competing answer: the most probable reading whose unique solution is not
     the answer's. Return the answer's status, the margin in nats (or a lower bound) and the simpler next-reading rule."""
     with RC2(repair_formula(log_probs)) as rc2:
@@ -94,12 +98,12 @@ def margin(log_probs: list[list[float]], solution: list[list[int]], budget: floa
 
         # The next-reading rule: is the next most probable reading also uniquely solvable, with another solution?
         rc2.add_clause([-y(r, c, r1[r][c]) for r in range(N) for c in range(N)])
-        nxt, nxt_status = uniqueness_loop(rc2, 1, budget)
+        nxt, nxt_status = uniqueness_loop(rc2, 1, rival_budget)
         result["next_flag"] = nxt_status == "unique" and solve(nxt[-1]) != s1
 
         # The margin: forbid the answer's solution grid, and continue the uniqueness loop from there.
         rc2.add_clause([-var(r, c, s1[r][c], N) for r in range(N) for c in range(N)])
-        rivals, rival_status = uniqueness_loop(rc2, MAX_TRIES, budget)
+        rivals, rival_status = uniqueness_loop(rc2, MAX_TRIES, rival_budget)
         if rival_status == "unsat":  # no other answer is consistent with any reading at all
             result["margin"] = math.inf
         else:
@@ -196,28 +200,33 @@ def analyze_census(census: pd.DataFrame) -> None:
     save(fig, RESULTS / "undetectable_census.png")
 
 
-def run_margins(split: str, method: str, fits: dict) -> pd.DataFrame:
-    """Return the answer status and margin of every grid of a split for every model, with the probabilities of
-    the chosen calibration; cached in data/ so that the test grids run only once."""
-    from calibrate import apply
+def run_margins(split: str, fits: dict) -> pd.DataFrame:
+    """Return the answer status and margin of every grid of a split (MARGIN_MODELS, seed 0), cached in data/ so that
+    the test grids run only once. The answers are those of repair.py; the margin is computed with the raw probabilities and
+    divided by the model's temperature, which gives exactly the margin under temperature scaling (up to rounding:
+    every reading's cost is scaled by 1/T and shifted by the same constant)."""
     from read_grids import grid_logits
 
-    path = DATA_DIR / f"margins_{split}_{method}.csv"
+    path = DATA_DIR / f"margins_{split}.csv"
     if path.exists():
         return pd.read_csv(path)
     puzzles = load_puzzles(split)
-    # The answers of the calibrated repair run: grids it could not answer (timeout, flagged) keep that answer.
-    repaired = mark_timeouts(pd.read_csv(DATA_DIR / f"repair_{split}_{method}.csv"))
-    answers = repaired.set_index(["model", "seed", "grid"]).answer
+    # Grids the repair could not answer (timeout, flagged) keep that answer.
+    answers = mark_timeouts(pd.read_csv(DATA_DIR / f"repair_{split}_raw.csv")).set_index(["model", "seed", "grid"]).answer
     rows = []
     with Pool(WORKERS) as pool:
         for (name, seed), z in grid_logits(split).items():
+            if name not in MARGIN_MODELS or seed not in MARGIN_SEEDS:
+                continue
             start = time.perf_counter()
-            lp = torch.log_softmax(apply(z, fits[name, seed], method).double(), dim=2).tolist()
+            lp = torch.log_softmax(z.double(), dim=2).tolist()
             todo = [i for i in range(len(puzzles)) if answers[name, seed, i] in ("right", "wrong")]
             found = dict(zip(todo, pool.starmap(margin, [(lp[i], puzzles[i]["solution"]) for i in todo], chunksize=4)))
-            rows += [dict(model=name, seed=seed, grid=i, **found.get(i, {"answer": answers[name, seed, i]}))
-                     for i in range(len(puzzles))]
+            for i in range(len(puzzles)):
+                r = found.get(i, {"answer": answers[name, seed, i]})
+                if "margin" in r:
+                    r["margin_raw"], r["margin"] = r["margin"], r["margin"] / fits[name, seed][0]
+                rows.append(dict(model=name, seed=seed, grid=i, **r))
             print(f"margins {split} {name} seed {seed}: {time.perf_counter() - start:.0f} s", flush=True)
     table = pd.DataFrame(rows)
     table.to_csv(path, index=False)
@@ -234,9 +243,9 @@ def choose_tau(table: pd.DataFrame) -> float:
 
 
 def margin_summary(table: pd.DataFrame, tau: float) -> pd.DataFrame:
-    """Return per model (seeds pooled): the answers by status, and what the margin rule and the next-reading rule flag."""
+    """Return per model (its seeds pooled): the answers by status, and what the margin rule and the next-reading rule flag."""
     rows = []
-    for name in MODELS:
+    for name in MARGIN_MODELS:
         t = table[table.model == name]
         right, wrong = t[t.answer == "right"], t[t.answer == "wrong"]
         caught, lost = (wrong.margin < tau).sum(), (right.margin < tau).sum()
@@ -256,22 +265,23 @@ def plot_margins(table: pd.DataFrame, tau: float, split: str, curve: bool) -> No
     fig, axes = plt.subplots(1, 2 if curve else 1, figsize=(13 if curve else 7, 4.8))
     ax_strip = axes[0] if curve else axes
     rng = np.random.default_rng(0)
-    for row, name in enumerate(MODELS):
+    for row, name in enumerate(MARGIN_MODELS):
         t = table[table.model == name]
         for answer, color, size in (("right", MUTED, 6), ("wrong", BAD, 24)):
             m = t[t.answer == answer].margin.clip(upper=40)
             ax_strip.scatter(m, row + rng.uniform(-0.25, 0.25, len(m)), s=size, color=color, linewidths=0,
                              alpha=0.5 if answer == "right" else 0.9, label=f"{answer} answer" if row == 0 else None)
     ax_strip.axvline(tau, color=INK, linewidth=1, linestyle="--")
-    ax_strip.text(tau + 0.3, 2.45, f"τ = {tau:.2f}", color=INK, fontsize=9)
-    ax_strip.set_yticks(range(len(MODELS)), MODELS)
+    ax_strip.text(tau + 0.3, 0.97, f"τ = {tau:.2f}", color=INK, fontsize=9, va="top",
+                  transform=ax_strip.get_xaxis_transform())  # x in nats, y in axes units
+    ax_strip.set_yticks(range(len(MARGIN_MODELS)), MARGIN_MODELS)
     ax_strip.set_xlabel("margin to the best competing answer (nats, clipped at 40)", color=INK)
-    ax_strip.set_title(f"{split} grids, 3 seeds pooled", color=INK, fontsize=11)
+    ax_strip.set_title(f"{split} grids, seed 0", color=INK, fontsize=11)
     style(ax_strip)
     ax_strip.legend(frameon=False, labelcolor=INK, loc="lower right")
     if curve:
         ax_curve = axes[1]
-        for name in MODELS:
+        for name in MARGIN_MODELS:
             t = table[table.model == name]
             wrong, right = t.margin[t.answer == "wrong"], t.margin[t.answer == "right"]
             if len(wrong) == 0:
@@ -295,15 +305,15 @@ def main() -> None:
     analyze_census(run_census())
     print(f"(census: {time.perf_counter() - start:.0f} s)\n")
     fits = torch.load(DATA_DIR / "calibration_fits.pt")
-    method = pd.read_csv(RESULTS / "calibration_summary.csv").chosen.iloc[0]
-    val = run_margins("val", method, fits)
+    val = run_margins("val", fits)
+    val = val[val.model.isin(MARGIN_MODELS)]  # the validation cache also holds the other models
     tau = choose_tau(val)
-    print(f"Probabilities: {method} (chosen by calibrate.py). Threshold chosen on the validation grids: tau = {tau:.2f} "
-          f"nats (ln R = {math.log(R):.2f}, the Bayes threshold for calibrated margins)")
-    for split, table in (("val", val), ("test", run_margins("test", method, fits))):
+    print(f"Threshold chosen on the validation grids: tau = {tau:.2f} nats of temperature-calibrated margin "
+          f"(ln R = {math.log(R):.2f}, the Bayes threshold for calibrated margins)", flush=True)
+    for split, table in (("val", val), ("test", run_margins("test", fits))):
         summary = margin_summary(table, tau)
         summary.to_csv(RESULTS / f"undetectable_margin_{split}.csv", index=False)
-        print(f"\n{split} grids, 3 seeds pooled:\n" + summary.to_string(index=False))
+        print(f"\n{split} grids, seed 0:\n" + summary.to_string(index=False), flush=True)
         plot_margins(table, tau, split, curve=split == "val")
 
 

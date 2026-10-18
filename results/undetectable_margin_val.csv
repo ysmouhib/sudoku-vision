@@ -1,0 +1,2 @@
+model,tau,grids,right,wrong,timeout,flagged,wrong_caught,right_flagged,right_kept,wrong_undetected,next_wrong_caught,next_right_flagged,wrong_rival_is_truth,margin_lower_bounds
+cnn,2.65,200,198,2,0,0,2,3,195,0,0,17,1,113
