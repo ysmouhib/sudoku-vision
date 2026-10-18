@@ -8,3 +8,5 @@ matplotlib==3.11.2
 pandas==3.0.6
 pytest==9.1.1
 tqdm==4.70.1
+onnx==1.23.2
+onnxruntime==1.31.0

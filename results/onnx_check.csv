@@ -1,0 +1,2 @@
+cells,max_abs_logit_diff,same_argmax,max_diff_batch_1,max_diff_batch_81,accuracy_onnx,ms_per_grid_onnx_cpu,file_kb
+10022,1.1444091796875e-05,1.0,2.86102294921875e-06,5.7220458984375e-06,0.9897226102574337,3.5187510002288036,1648.40234375
