@@ -87,7 +87,8 @@ def main() -> None:
     misread = grids[grids.errors > 0].assign(errors=grids.errors.clip(upper=4))
     by_errors = pd.crosstab(misread.errors, misread.outcome)
     by_errors = by_errors.reindex(columns=[o for o in OUTCOMES[1:] if o in by_errors.columns])
-    print(pd.concat([by_errors.sum(1).rename("grids"), (100 * by_errors.div(by_errors.sum(1), axis=0)).round(1)],
+    total = by_errors.sum(axis=1)
+    print(pd.concat([total.rename("grids"), (100 * by_errors.div(total, axis=0)).round(1)],
                     axis=1).rename(index={4: "4+"}).to_string())
 
     fig, ax = plt.subplots(figsize=(5.5, 5))
