@@ -14,7 +14,7 @@ from pysat.solvers import Solver
 from digits import DATA_DIR, MODELS
 from generate import WORKERS, load_puzzles, make_puzzles
 from plots import BAD, INK, MODEL_COLORS, MUTED, save, style
-from repair import BUDGET, MAX_TRIES, N, repair_formula, uniqueness_loop, y
+from repair import BUDGET, MAX_TRIES, N, mark_timeouts, repair_formula, uniqueness_loop, y
 from sudoku_sat import model_to_grid, rule_clauses, solve, var
 
 RESULTS = Path("results")
@@ -206,13 +206,18 @@ def run_margins(split: str, method: str, fits: dict) -> pd.DataFrame:
     if path.exists():
         return pd.read_csv(path)
     puzzles = load_puzzles(split)
+    # The answers of the calibrated repair run: grids it could not answer (timeout, flagged) keep that answer.
+    repaired = mark_timeouts(pd.read_csv(DATA_DIR / f"repair_{split}_{method}.csv"))
+    answers = repaired.set_index(["model", "seed", "grid"]).answer
     rows = []
     with Pool(WORKERS) as pool:
         for (name, seed), z in grid_logits(split).items():
             start = time.perf_counter()
             lp = torch.log_softmax(apply(z, fits[name, seed], method).double(), dim=2).tolist()
-            results = pool.starmap(margin, [(lp[i], p["solution"]) for i, p in enumerate(puzzles)], chunksize=4)
-            rows += [dict(model=name, seed=seed, grid=i, **r) for i, r in enumerate(results)]
+            todo = [i for i in range(len(puzzles)) if answers[name, seed, i] in ("right", "wrong")]
+            found = dict(zip(todo, pool.starmap(margin, [(lp[i], puzzles[i]["solution"]) for i in todo], chunksize=4)))
+            rows += [dict(model=name, seed=seed, grid=i, **found.get(i, {"answer": answers[name, seed, i]}))
+                     for i in range(len(puzzles))]
             print(f"margins {split} {name} seed {seed}: {time.perf_counter() - start:.0f} s", flush=True)
     table = pd.DataFrame(rows)
     table.to_csv(path, index=False)
