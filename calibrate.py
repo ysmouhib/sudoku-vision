@@ -17,6 +17,7 @@ RESULTS = Path("results")
 T_GRID = torch.arange(50, 501) / 100  # 0.50, 0.51, ..., 5.00
 N_BINS = 15
 METHODS = ["raw", "temperature", "vector"]
+REPAIR_MODELS = ["mlp", "cnn"]  # the linear model's repairs mostly time out; left out of the repair comparison
 METHOD_COLORS = {"raw": "#2a78d6", "temperature": "#eb6834", "vector": "#1baf7a"}
 
 
@@ -116,9 +117,10 @@ def main() -> None:
     torch.save(fits, DATA_DIR / "calibration_fits.pt")  # (T, a, b) per model, reused by undetectable.py
     plot_reliability(val_panels, "validation cells (fit data)", RESULTS / "calibration_reliability_val.png")
 
-    # Choose the method on the validation grids.
-    val_logits = grid_logits("val")
+    # Choose the method on the validation grids (MLP and CNN).
+    val_logits = {k: z for k, z in grid_logits("val").items() if k[0] in REPAIR_MODELS}
     val_tables = {m: load_or_run("val", m, {k: apply(z, fits[k], m) for k, z in val_logits.items()}) for m in METHODS}
+    val_tables = {m: t[t.model.isin(REPAIR_MODELS)] for m, t in val_tables.items()}
     val_summary = summarize(pd.concat(val_tables.values(), ignore_index=True))
     for m in METHODS[1:]:
         for (name, seed), n in changed_finals(val_tables[m], val_tables["raw"]).items():
@@ -126,18 +128,21 @@ def main() -> None:
                             "changed"] = n
     val_summary.to_csv(RESULTS / "calibration_repair_val.csv", index=False)
     score = val_summary.groupby("probs")[["answer_right", "answer_wrong"]].mean()
-    score["val_nll"] = [calib[f"val_nll_{m}"].mean() for m in score.index]
+    score["val_nll"] = [calib[calib.model.isin(REPAIR_MODELS)][f"val_nll_{m}"].mean() for m in score.index]
     chosen = min(METHODS, key=lambda m: (-score.loc[m, "answer_right"], score.loc[m, "answer_wrong"],
                                          score.loc[m, "val_nll"]))
-    print("\nValidation grids, mean over the 9 models (choice: most right answers, then fewest wrong, then lowest "
-          "validation cross-entropy):")
+    print("\nValidation grids, mean over the MLP and CNN seeds (choice: most right answers, then fewest wrong, then "
+          "lowest validation cross-entropy):")
     print(score.round(3).to_string())
     print(f"Chosen: {chosen}")
 
     # Run the chosen configuration on the test grids, once (cached in data/ by load_or_run).
     test_logits = grid_logits("test")
-    raw_test = load_or_run("test", "raw", test_logits)
-    final_test = load_or_run("test", chosen, {k: apply(z, fits[k], chosen) for k, z in test_logits.items()})
+    raw_test = load_or_run("test", "raw", test_logits)  # the uncalibrated repair run, cached
+    raw_test = raw_test[raw_test.model.isin(REPAIR_MODELS)]
+    final_test = load_or_run("test", chosen, {k: apply(z, fits[k], chosen) for k, z in test_logits.items()
+                                              if k[0] in REPAIR_MODELS})
+    final_test = final_test[final_test.model.isin(REPAIR_MODELS)]
     test_summary = summarize(pd.concat([raw_test, final_test] if chosen != "raw" else [raw_test], ignore_index=True))
     if chosen != "raw":
         for (name, seed), n in changed_finals(final_test, raw_test).items():
