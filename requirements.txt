@@ -1,0 +1,10 @@
+# PyTorch with CUDA 12.6 comes from PyTorch's own index; plain PyPI only has the CPU build on Windows.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.10.0+cu126
+torchvision==0.25.0+cu126
+python-sat==1.9.dev16
+numpy==2.5.2
+matplotlib==3.11.2
+pandas==3.0.6
+pytest==9.1.1
+tqdm==4.70.1
